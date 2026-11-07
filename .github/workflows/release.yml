@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: npm ci
+      - run: ./gradlew assembleDebug --no-daemon
+        working-directory: android
+      - run: mv android/app/build/outputs/apk/debug/app-debug.apk "qa-training-app-rn-${GITHUB_REF_NAME}.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: qa-training-app-rn-${{ github.ref_name }}.apk
+
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: pod install
+        working-directory: ios
+      - run: xcodebuild -workspace ios/QaTrainingApp.xcworkspace -scheme QaTrainingApp -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO -derivedDataPath ios/build
+      - run: ditto -c -k --keepParent ios/build/Build/Products/Release-iphonesimulator/QaTrainingApp.app "qa-training-app-rn-${GITHUB_REF_NAME}-ios-simulator.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-zip
+          path: qa-training-app-rn-${{ github.ref_name }}-ios-simulator.zip
+
+  publish:
+    needs: [android, ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum qa-training-app-rn-${GITHUB_REF_NAME}.apk qa-training-app-rn-${GITHUB_REF_NAME}-ios-simulator.zip > checksums.sha256
+          gh release create "${GITHUB_REF_NAME}" \
+            "qa-training-app-rn-${GITHUB_REF_NAME}.apk" \
+            "qa-training-app-rn-${GITHUB_REF_NAME}-ios-simulator.zip" \
+            checksums.sha256 \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
